@@ -1,0 +1,86 @@
+# Synchronyze "Issue Labels" between GitHub Repositories.
+#
+# See README.md for more info.
+#
+---
+- name: Sync GitHub Repo Labels
+  hosts: localhost
+  check_mode: no
+  gather_facts: no
+  vars_prompt:
+  - name: github_access_token
+    prompt: GitHub Access Token
+  - name: organization_or_user
+    prompt: GitHub Organization or User
+    default: routeviews
+    private: no
+  - name: dest_repo_slug
+    prompt: Which repository would you like to update?
+    default: infra
+    private: no
+  - name: src_repo_slug
+    prompt: Which repository would you like to retrieve labels from?
+    default: labels
+    private: no
+  vars:
+    labels_file: /tmp/github-label-sync.json
+  tasks:
+    - name: "Prepare {{ labels_file }}"
+      block:
+      - name: "Get labels from {{ src_repo_slug }}"
+        ansible.builtin.uri:
+          url: "https://api.github.com/repos/{{ organization_or_user }}/{{ src_repo_slug }}/labels"
+          headers:
+            Authorization: "Bearer {{ github_access_token }}"
+            Accept: application/vnd.github+json
+          return_content: yes
+        register: api_response
+      
+      - debug: 
+          var: api_response
+          verbosity: 4
+
+      - name: Parse into "github-label-sync" format
+        vars: 
+          query: '[].{name: name, description: description, color: color}'
+        ansible.builtin.set_fact:
+          final_labels: "{{ api_response.json | community.general.json_query(query) }}"
+
+      - debug: 
+          var: final_labels
+          verbosity: 4
+
+      - name: Save as file
+        diff: no
+        copy:
+          content: "{{ final_labels }}"
+          dest: "{{ labels_file }}"
+          mode: '0600'
+
+    - name: Install "github-label-sync" node.js package globally.
+      community.general.npm:
+        name: github-label-sync
+        global: yes
+
+    - name: Sync Labels Dry Run
+      when: ansible_check_mode
+      block:
+      - name: Sync Labels Dry Run
+        ansible.builtin.command: "github-label-sync --dry-run -l {{ labels_file }} -a {{ github_access_token }} {{ organization_or_user }}/{{ dest_repo_slug }}"
+        register: dryrun_output
+      
+      - name: Dry Run Output
+        debug:
+          var: dryrun_output.stdout_lines
+    
+    - name: Sync Labels
+      when: not ansible_check_mode
+      block:
+      - name: Sync Labels
+        ansible.builtin.command: "github-label-sync --dry-run -l {{ labels_file }} -a {{ github_access_token }} {{ organization_or_user }}/{{ dest_repo_slug }}"
+        register: sync_output
+
+      - name: Sync output
+        debug:
+          var: sync_output.stdout_lines
+
